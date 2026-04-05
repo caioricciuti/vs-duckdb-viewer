@@ -10,7 +10,9 @@ export function activate(context: vscode.ExtensionContext): void {
           canSelectFiles: true,
           canSelectFolders: false,
           canSelectMany: false,
-          filters: { "DuckDB Files": ["db", "duckdb", "ddb"] },
+          filters: {
+            "Data Files": ["db", "duckdb", "ddb", "csv", "parquet", "json", "jsonl", "ndjson"],
+          },
         });
         if (!files || files.length === 0) return;
         uri = files[0];

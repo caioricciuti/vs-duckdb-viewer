@@ -4,7 +4,7 @@ const watch = process.argv.includes("--watch");
 const production = process.argv.includes("--production");
 
 /** @type {import('esbuild').BuildOptions} */
-const buildOptions = {
+const extensionBuild = {
   entryPoints: ["src/extension.ts"],
   bundle: true,
   outfile: "dist/extension.js",
@@ -16,13 +16,31 @@ const buildOptions = {
   minify: production,
 };
 
+/** @type {import('esbuild').BuildOptions} */
+const webviewBuild = {
+  entryPoints: ["src/webview/main.ts"],
+  bundle: true,
+  outfile: "dist/webview.js",
+  platform: "browser",
+  format: "iife",
+  target: "es2022",
+  sourcemap: !production,
+  minify: production,
+};
+
 async function main() {
   if (watch) {
-    const ctx = await esbuild.context(buildOptions);
-    await ctx.watch();
+    const [extCtx, webCtx] = await Promise.all([
+      esbuild.context(extensionBuild),
+      esbuild.context(webviewBuild),
+    ]);
+    await Promise.all([extCtx.watch(), webCtx.watch()]);
     console.log("Watching for changes...");
   } else {
-    await esbuild.build(buildOptions);
+    await Promise.all([
+      esbuild.build(extensionBuild),
+      esbuild.build(webviewBuild),
+    ]);
     console.log("Build complete.");
   }
 }

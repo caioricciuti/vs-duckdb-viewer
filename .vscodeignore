@@ -1,14 +1,15 @@
 .vscode/**
-src/**/*.ts
+src/**
 scripts/**
 test/**
 node_modules/**
 !node_modules/@duckdb/**
 **/*.map
 *.ts
-!src/webview/**
 .gitignore
 .git/**
 tsconfig.json
+tsconfig.webview.json
 esbuild.config.js
 CLAUDE.md
+.claude/**

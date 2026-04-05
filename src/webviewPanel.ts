@@ -1,13 +1,10 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { DuckDBProvider } from "./duckdbProvider";
+import type { ExtensionMessage, SortDir } from "./shared/types";
 
-interface WebviewMessage {
-  type: string;
-  table?: string;
-  page?: number;
-  sql?: string;
-}
+const HISTORY_KEY = "duckdb-viewer.queryHistory";
+const MAX_HISTORY = 50;
 
 export class DuckDBViewerPanel {
   static readonly viewType = "duckdbViewer";
@@ -16,6 +13,7 @@ export class DuckDBViewerPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly provider: DuckDBProvider;
   private readonly extensionUri: vscode.Uri;
+  private readonly context: vscode.ExtensionContext;
   private readonly filePath: string;
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -40,16 +38,13 @@ export class DuckDBViewerPanel {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [
+          vscode.Uri.joinPath(context.extensionUri, "dist"),
           vscode.Uri.joinPath(context.extensionUri, "src", "webview"),
         ],
       }
     );
 
-    const viewer = new DuckDBViewerPanel(
-      panel,
-      context.extensionUri,
-      filePath
-    );
+    const viewer = new DuckDBViewerPanel(panel, context, filePath);
     DuckDBViewerPanel.panels.set(filePath, viewer);
     context.subscriptions.push({ dispose: () => viewer.dispose() });
 
@@ -58,19 +53,19 @@ export class DuckDBViewerPanel {
 
   private constructor(
     panel: vscode.WebviewPanel,
-    extensionUri: vscode.Uri,
+    context: vscode.ExtensionContext,
     filePath: string
   ) {
     this.panel = panel;
-    this.extensionUri = extensionUri;
+    this.context = context;
+    this.extensionUri = context.extensionUri;
     this.filePath = filePath;
     this.provider = new DuckDBProvider(filePath);
 
     this.panel.webview.html = this.getHtml();
-    this.panel.iconPath = vscode.Uri.joinPath(extensionUri, "icon.svg");
 
     this.panel.webview.onDidReceiveMessage(
-      (msg: WebviewMessage) => this.handleMessage(msg),
+      (msg: ExtensionMessage) => this.handleMessage(msg),
       null,
       this.disposables
     );
@@ -81,39 +76,46 @@ export class DuckDBViewerPanel {
   private async initialize(): Promise<void> {
     try {
       await this.provider.connect();
-      const tables = await this.provider.getTables();
-      await this.panel.webview.postMessage({ type: "tablesLoaded", tables });
+      const schema = await this.provider.getSchema();
+      await this.panel.webview.postMessage({ type: "schemaLoaded", schema });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       await this.panel.webview.postMessage({ type: "error", message });
     }
   }
 
-  private async handleMessage(msg: WebviewMessage): Promise<void> {
+  private async handleMessage(msg: ExtensionMessage): Promise<void> {
     try {
       switch (msg.type) {
-        case "getTables": {
-          const tables = await this.provider.getTables();
+        case "getSchema":
+        case "refresh": {
+          if (msg.type === "refresh") await this.provider.reconnect();
+          const schema = await this.provider.getSchema();
           await this.panel.webview.postMessage({
-            type: "tablesLoaded",
-            tables,
+            type: "schemaLoaded",
+            schema,
           });
           break;
         }
         case "selectTable": {
           const result = await this.provider.getTableData(
             msg.table!,
-            msg.page ?? 0
+            msg.page ?? 0,
+            msg.sortColumn,
+            msg.sortDir as SortDir | undefined
           );
           await this.panel.webview.postMessage({
             type: "queryResult",
             ...result,
             table: msg.table,
             page: msg.page ?? 0,
+            sortColumn: msg.sortColumn,
+            sortDir: msg.sortDir,
           });
           break;
         }
         case "runQuery": {
+          this.addToHistory(msg.sql!);
           const result = await this.provider.runQuery(msg.sql!);
           await this.panel.webview.postMessage({
             type: "queryResult",
@@ -121,12 +123,14 @@ export class DuckDBViewerPanel {
           });
           break;
         }
-        case "refresh": {
-          await this.provider.reconnect();
-          const tables = await this.provider.getTables();
+        case "getHistory": {
+          const history = this.context.globalState.get<string[]>(
+            HISTORY_KEY,
+            []
+          );
           await this.panel.webview.postMessage({
-            type: "tablesLoaded",
-            tables,
+            type: "historyLoaded",
+            history,
           });
           break;
         }
@@ -137,13 +141,21 @@ export class DuckDBViewerPanel {
     }
   }
 
+  private addToHistory(sql: string): void {
+    const history = this.context.globalState.get<string[]>(HISTORY_KEY, []);
+    const filtered = history.filter((q) => q !== sql);
+    filtered.unshift(sql);
+    if (filtered.length > MAX_HISTORY) filtered.length = MAX_HISTORY;
+    this.context.globalState.update(HISTORY_KEY, filtered);
+  }
+
   private getHtml(): string {
     const wv = this.panel.webview;
     const styleUri = wv.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "src", "webview", "style.css")
     );
     const scriptUri = wv.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "src", "webview", "main.js")
+      vscode.Uri.joinPath(this.extensionUri, "dist", "webview.js")
     );
     const nonce = getNonce();
     const fileName = path.basename(this.filePath);
@@ -153,7 +165,7 @@ export class DuckDBViewerPanel {
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src ${wv.cspSource}; script-src 'nonce-${nonce}';">
+    content="default-src 'none'; style-src ${wv.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="${styleUri}" rel="stylesheet">
   <title>DuckDB: ${esc(fileName)}</title>
@@ -162,11 +174,13 @@ export class DuckDBViewerPanel {
   <div class="app">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <span class="sidebar-title">Tables</span>
-        <button class="icon-btn" id="refresh-btn" title="Refresh (reconnect &amp; reload tables)">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path fill-rule="evenodd" clip-rule="evenodd"
-              d="M4.681 3.094A5.003 5.003 0 0 1 13 8h-1a4.002 4.002 0 0 0-6.654-2.985L7 6.5H3V2.5l1.681.594zM3 8a4.003 4.003 0 0 0 6.654 2.985L8 9.5h4V13.5l-1.681-.594A5.003 5.003 0 0 1 3 8z"/>
+        <span class="sidebar-title">Schema</span>
+        <button class="icon-btn" id="refresh-btn" title="Refresh (reconnect &amp; reload)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+            <path d="M8 16H3v5"/>
           </svg>
         </button>
       </div>
@@ -178,27 +192,43 @@ export class DuckDBViewerPanel {
 
     <main class="main">
       <div class="query-bar">
-        <div class="query-input-wrapper">
-          <textarea
-            id="query-input"
-            placeholder="Write SQL and press ${process.platform === "darwin" ? "Cmd" : "Ctrl"}+Enter to run..."
-            rows="3"
-            spellcheck="false"
-          ></textarea>
+        <div class="query-editor-wrapper">
+          <div id="query-editor"></div>
         </div>
         <div class="query-actions">
-          <button class="btn btn-primary" id="run-btn">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4 2l10 6-10 6V2z"/>
+          <button class="btn btn-primary" id="run-btn" title="${process.platform === "darwin" ? "Cmd" : "Ctrl"}+Enter">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+              <polygon points="6 3 20 12 6 21 6 3"/>
             </svg>
             Run
           </button>
-          <button class="btn btn-secondary" id="csv-btn" title="Copy results as CSV" disabled>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M14 1H2a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zM2 2h12v3H2V2zm0 4h5v4H2V6zm6 0h6v4H8V6zM2 11h5v3H2v-3zm6 0h6v3H8v-3z"/>
+          <button class="icon-btn" id="more-btn" title="More actions">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
             </svg>
-            CSV
           </button>
+          <div class="actions-dropdown" id="actions-dropdown" style="display:none">
+            <button class="dropdown-item" id="csv-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 13h2"/><path d="M14 13h2"/><path d="M8 17h2"/><path d="M14 17h2"/>
+              </svg>
+              Copy as CSV
+            </button>
+            <button class="dropdown-item" id="json-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>
+              </svg>
+              Copy as JSON
+            </button>
+            <div class="dropdown-separator"></div>
+            <button class="dropdown-item" id="history-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+              Query history
+            </button>
+          </div>
+          <div class="history-dropdown" id="history-dropdown" style="display:none"></div>
         </div>
       </div>
 
@@ -206,7 +236,7 @@ export class DuckDBViewerPanel {
 
       <div class="result-area" id="result-area">
         <div class="empty-state" id="empty-state">
-          <svg width="48" height="48" viewBox="0 0 48 48" fill="currentColor" opacity="0.2">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="currentColor" opacity="0.35">
             <path d="M24 4C12.954 4 4 8.477 4 14v20c0 5.523 8.954 10 20 10s20-4.477 20-10V14c0-5.523-8.954-10-20-10zm16 10c0 2.418-6.611 6-16 6S8 16.418 8 14s6.611-6 16-6 16 3.582 16 6zM8 19.37C10.924 21.627 17.035 23 24 23s13.076-1.373 16-3.63V24c0 2.418-6.611 6-16 6S8 26.418 8 24v-4.63zM24 40c-9.389 0-16-3.582-16-6v-4.63C10.924 31.627 17.035 33 24 33s13.076-1.373 16-3.63V34c0 2.418-6.611 6-16 6z"/>
           </svg>
           <p>Select a table or run a query</p>
@@ -225,6 +255,23 @@ export class DuckDBViewerPanel {
 
   <div class="loading-overlay" id="loading" style="display:none">
     <div class="spinner"></div>
+  </div>
+
+  <div class="cell-preview-overlay" id="cell-preview" style="display:none">
+    <div class="cell-preview-modal">
+      <div class="cell-preview-header">
+        <span id="cell-preview-title"></span>
+        <div class="cell-preview-actions">
+          <button class="btn btn-secondary btn-sm" id="cell-preview-copy">Copy</button>
+          <button class="icon-btn" id="cell-preview-close" title="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <pre class="cell-preview-body" id="cell-preview-body"></pre>
+    </div>
   </div>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>

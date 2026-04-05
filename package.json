@@ -2,7 +2,7 @@
   "name": "vs-duckdb-viewer",
   "displayName": "DuckDB Viewer",
   "description": "Browse and query DuckDB database files directly inside VS Code",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "publisher": "caioricciuti",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -40,7 +40,7 @@
       "explorer/context": [
         {
           "command": "duckdb-viewer.openFile",
-          "when": "resourceExtname == .db || resourceExtname == .duckdb || resourceExtname == .ddb",
+          "when": "resourceExtname == .db || resourceExtname == .duckdb || resourceExtname == .ddb || resourceExtname == .csv || resourceExtname == .parquet || resourceExtname == .json || resourceExtname == .jsonl || resourceExtname == .ndjson",
           "group": "navigation"
         }
       ]
@@ -60,6 +60,13 @@
     "@duckdb/node-api": "1.5.1-r.1"
   },
   "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.1",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/search": "^6.6.0",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.41.0",
     "@types/node": "^25.5.2",
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.3.0",

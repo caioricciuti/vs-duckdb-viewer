@@ -3,11 +3,16 @@ import {
   DuckDBConnection,
   DuckDBResultReader,
 } from "@duckdb/node-api";
+import {
+  PAGE_SIZE,
+  type ColumnInfo,
+  type SchemaInfo,
+  type SchemaTable,
+  type SchemaColumn,
+  type SortDir,
+} from "./shared/types";
 
-export interface ColumnInfo {
-  name: string;
-  type: string;
-}
+export type { ColumnInfo, SchemaInfo, SchemaTable, SchemaColumn };
 
 export interface QueryResult {
   columns: ColumnInfo[];
@@ -21,22 +26,54 @@ export interface TableInfo {
   rowCount: number;
 }
 
-const PAGE_SIZE = 100;
+const DATA_FILE_EXTS = new Set([".csv", ".parquet", ".json", ".jsonl", ".ndjson"]);
+
+function isDataFile(filePath: string): boolean {
+  const ext = filePath.toLowerCase().replace(/^.*(\.[^.]+)$/, "$1");
+  return DATA_FILE_EXTS.has(ext);
+}
+
+function readerFn(filePath: string): string {
+  const ext = filePath.toLowerCase().replace(/^.*(\.[^.]+)$/, "$1");
+  switch (ext) {
+    case ".csv":
+      return "read_csv_auto";
+    case ".parquet":
+      return "read_parquet";
+    case ".json":
+    case ".jsonl":
+    case ".ndjson":
+      return "read_json_auto";
+    default:
+      return "read_csv_auto";
+  }
+}
 
 export class DuckDBProvider {
   private instance: DuckDBInstance | null = null;
   private connection: DuckDBConnection | null = null;
   readonly filePath: string;
+  private isDataFileMode: boolean;
 
   constructor(filePath: string) {
     this.filePath = filePath;
+    this.isDataFileMode = isDataFile(filePath);
   }
 
   async connect(): Promise<void> {
-    this.instance = await DuckDBInstance.create(this.filePath, {
-      access_mode: "READ_ONLY",
-    });
-    this.connection = await this.instance.connect();
+    if (this.isDataFileMode) {
+      this.instance = await DuckDBInstance.create();
+      this.connection = await this.instance.connect();
+      const escaped = this.filePath.replace(/'/g, "''");
+      await this.connection.run(
+        `CREATE OR REPLACE VIEW data AS SELECT * FROM ${readerFn(this.filePath)}('${escaped}')`
+      );
+    } else {
+      this.instance = await DuckDBInstance.create(this.filePath, {
+        access_mode: "READ_ONLY",
+      });
+      this.connection = await this.instance.connect();
+    }
   }
 
   async reconnect(): Promise<void> {
@@ -44,30 +81,57 @@ export class DuckDBProvider {
     await this.connect();
   }
 
-  async getTables(): Promise<TableInfo[]> {
+  async getSchema(): Promise<SchemaInfo> {
     this.assertConnected();
-    const reader = await this.connection!.runAndReadAll("SHOW TABLES");
-    const tableNames = reader.getRows().map((row) => row[0] as string);
 
-    const tables: TableInfo[] = [];
-    for (const name of tableNames) {
+    const colReader = await this.connection!.runAndReadAll(`
+      SELECT table_name, column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'main'
+      ORDER BY table_name, ordinal_position
+    `);
+    const colRows = colReader.getRows();
+
+    const tableMap = new Map<string, SchemaColumn[]>();
+    for (const row of colRows) {
+      const tableName = row[0] as string;
+      const colName = row[1] as string;
+      const colType = row[2] as string;
+      if (!tableMap.has(tableName)) tableMap.set(tableName, []);
+      tableMap.get(tableName)!.push({ name: colName, type: colType });
+    }
+
+    const tables: SchemaTable[] = [];
+    for (const [name, columns] of tableMap) {
+      let rowCount = -1;
       try {
         const countReader = await this.connection!.runAndReadAll(
           `SELECT COUNT(*)::INTEGER FROM "${name}"`
         );
-        const countRows = countReader.getRows();
-        tables.push({ name, rowCount: Number(countRows[0][0]) });
+        rowCount = Number(countReader.getRows()[0][0]);
       } catch {
-        tables.push({ name, rowCount: -1 });
+        // ignore
       }
+      tables.push({ name, rowCount, columns });
     }
-    return tables;
+
+    return { tables };
   }
 
-  async getTableData(table: string, page: number): Promise<QueryResult> {
+  async getTableData(
+    table: string,
+    page: number,
+    sortCol?: string,
+    sortDirection?: SortDir
+  ): Promise<QueryResult> {
     this.assertConnected();
     const offset = page * PAGE_SIZE;
-    const dataSql = `SELECT * FROM "${table}" LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
+    let dataSql = `SELECT * FROM "${table}"`;
+    if (sortCol) {
+      const dir = sortDirection === "DESC" ? "DESC" : "ASC";
+      dataSql += ` ORDER BY "${sortCol}" ${dir}`;
+    }
+    dataSql += ` LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
     const countSql = `SELECT COUNT(*)::INTEGER FROM "${table}"`;
 
     const start = performance.now();
@@ -133,7 +197,6 @@ function extractColumns(reader: DuckDBResultReader): ColumnInfo[] {
   return columns;
 }
 
-/** Convert BigInt and Date values to JSON-safe types for postMessage. */
 function sanitizeRows(rows: unknown[][]): unknown[][] {
   return rows.map((row) => row.map(sanitizeValue));
 }
