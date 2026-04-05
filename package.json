@@ -2,7 +2,7 @@
   "name": "vs-duckdb-viewer",
   "displayName": "DuckDB Viewer",
   "description": "Browse and query DuckDB database files directly inside VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "caioricciuti",
   "license": "MIT",
   "icon": "images/icon.png",
