@@ -44,11 +44,20 @@ export class DuckDBViewerPanel {
       }
     );
 
+    await DuckDBViewerPanel.initWithPanel(panel, context, fileUri);
+  }
+
+  static async initWithPanel(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    fileUri: vscode.Uri
+  ): Promise<DuckDBViewerPanel> {
+    const filePath = fileUri.fsPath;
+    DuckDBViewerPanel.panels.get(filePath)?.dispose();
     const viewer = new DuckDBViewerPanel(panel, context, filePath);
     DuckDBViewerPanel.panels.set(filePath, viewer);
-    context.subscriptions.push({ dispose: () => viewer.dispose() });
-
     await viewer.initialize();
+    return viewer;
   }
 
   private constructor(
@@ -120,6 +129,50 @@ export class DuckDBViewerPanel {
           await this.panel.webview.postMessage({
             type: "queryResult",
             ...result,
+          });
+          break;
+        }
+        case "summarize": {
+          const result = await this.provider.runQuery(
+            `SUMMARIZE "${msg.table!}"`
+          );
+          await this.panel.webview.postMessage({
+            type: "queryResult",
+            ...result,
+          });
+          break;
+        }
+        case "describeTable": {
+          const result = await this.provider.runQuery(
+            `DESCRIBE "${msg.table!}"`
+          );
+          await this.panel.webview.postMessage({
+            type: "queryResult",
+            ...result,
+          });
+          break;
+        }
+        case "exportToFile": {
+          const format = msg.format as "csv" | "parquet" | "json";
+          const filterMap: Record<string, Record<string, string[]>> = {
+            csv: { "CSV Files": ["csv"] },
+            parquet: { "Parquet Files": ["parquet"] },
+            json: { "JSON Files": ["json"] },
+          };
+          const saveUri = await vscode.window.showSaveDialog({
+            filters: filterMap[format],
+            defaultUri: vscode.Uri.file(
+              this.filePath.replace(/\.[^.]+$/, `_export.${format}`)
+            ),
+          });
+          if (!saveUri) break;
+          const escaped = saveUri.fsPath.replace(/'/g, "''");
+          await this.provider.runQuery(
+            `COPY (${msg.sql}) TO '${escaped}' (FORMAT '${format}')`
+          );
+          await this.panel.webview.postMessage({
+            type: "exportComplete",
+            path: saveUri.fsPath,
           });
           break;
         }
@@ -219,6 +272,31 @@ export class DuckDBViewerPanel {
                 <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>
               </svg>
               Copy as JSON
+            </button>
+            <button class="dropdown-item" id="profile-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16h.01"/><path d="M11 12h.01"/><path d="M15 8h.01"/><path d="M19 4h.01"/>
+              </svg>
+              Profile table
+            </button>
+            <div class="dropdown-separator"></div>
+            <button class="dropdown-item" id="export-csv-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/>
+              </svg>
+              Export as CSV...
+            </button>
+            <button class="dropdown-item" id="export-parquet-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/>
+              </svg>
+              Export as Parquet...
+            </button>
+            <button class="dropdown-item" id="export-json-btn" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/>
+              </svg>
+              Export as JSON...
             </button>
             <div class="dropdown-separator"></div>
             <button class="dropdown-item" id="history-btn">

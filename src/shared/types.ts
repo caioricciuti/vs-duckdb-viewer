@@ -29,6 +29,7 @@ export interface ExtensionMessage {
   sql?: string;
   sortColumn?: string;
   sortDir?: SortDir;
+  format?: string;
 }
 
 export interface QueryResultMsg {
@@ -58,8 +59,14 @@ export interface ErrorMsg {
   message: string;
 }
 
+export interface ExportCompleteMsg {
+  type: "exportComplete";
+  path: string;
+}
+
 export type WebviewIncomingMessage =
   | QueryResultMsg
   | SchemaLoadedMsg
   | HistoryLoadedMsg
-  | ErrorMsg;
+  | ErrorMsg
+  | ExportCompleteMsg;

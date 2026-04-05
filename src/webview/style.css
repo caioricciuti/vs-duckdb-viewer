@@ -279,6 +279,19 @@ body {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+/* ─── Context Menu ─── */
+
+.context-menu {
+  position: fixed;
+  min-width: 140px;
+  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+}
+
 /* ─── Actions Dropdown ─── */
 
 .actions-dropdown {

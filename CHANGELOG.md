@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0 — 2026-04-05
+
+### Added
+
+- **Auto-open on double-click** — `.parquet`, `.duckdb`, and `.ddb` files now open directly in the viewer via Custom Editor API (no right-click needed)
+- **Data profiling** — one-click SUMMARIZE shows min, max, avg, std, quartiles, null%, and unique count per column
+- **Export to file** — save query results to CSV, Parquet, or JSON files on disk using DuckDB's native COPY
+- **DESCRIBE table** — right-click any table in the schema tree to see column details
+- **Table context menu** — right-click tables for quick access to Describe and Profile actions
+
+### Changed
+
+- Expanded marketplace keywords for better discoverability (parquet viewer, csv viewer, data explorer, analytics, data science)
+- Updated extension description to highlight multi-format support
+
 ## 1.0.0 — 2026-04-05
 
 ### Added

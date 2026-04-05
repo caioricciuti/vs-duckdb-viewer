@@ -26,6 +26,7 @@ let sortColumn: string | null = null;
 let sortDir: SortDir = "ASC";
 let expandedTables = new Set<string>();
 let schemaTables: SchemaTable[] = [];
+let lastExecutedSql: string | null = null;
 
 // ─── Elements ───
 const $ = (id: string) => document.getElementById(id)!;
@@ -36,6 +37,10 @@ const jsonBtn = $("json-btn") as HTMLButtonElement;
 const historyBtn = $("history-btn");
 const moreBtn = $("more-btn");
 const actionsDropdown = $("actions-dropdown");
+const profileBtn = $("profile-btn") as HTMLButtonElement;
+const exportCsvBtn = $("export-csv-btn") as HTMLButtonElement;
+const exportParquetBtn = $("export-parquet-btn") as HTMLButtonElement;
+const exportJsonBtn = $("export-json-btn") as HTMLButtonElement;
 const refreshBtn = $("refresh-btn");
 const statusBar = $("status-bar");
 const emptyState = $("empty-state");
@@ -77,6 +82,10 @@ window.addEventListener("message", (event: MessageEvent) => {
     case "historyLoaded":
       renderHistory(msg.history);
       break;
+    case "exportComplete":
+      statusBar.innerHTML = `<span class="status-item">Exported to ${msg.path}</span>`;
+      hideLoading();
+      break;
     case "error":
       showError(msg.message);
       hideLoading();
@@ -111,6 +120,38 @@ historyBtn.addEventListener("click", (e) => {
   actionsDropdown.style.display = "none";
   vscode.postMessage({ type: "getHistory" });
 });
+profileBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  actionsDropdown.style.display = "none";
+  if (!currentTable) return;
+  showLoading();
+  clearError();
+  vscode.postMessage({ type: "summarize", table: currentTable });
+});
+exportCsvBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  actionsDropdown.style.display = "none";
+  if (lastExecutedSql) {
+    showLoading();
+    vscode.postMessage({ type: "exportToFile", format: "csv", sql: lastExecutedSql });
+  }
+});
+exportParquetBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  actionsDropdown.style.display = "none";
+  if (lastExecutedSql) {
+    showLoading();
+    vscode.postMessage({ type: "exportToFile", format: "parquet", sql: lastExecutedSql });
+  }
+});
+exportJsonBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  actionsDropdown.style.display = "none";
+  if (lastExecutedSql) {
+    showLoading();
+    vscode.postMessage({ type: "exportToFile", format: "json", sql: lastExecutedSql });
+  }
+});
 
 // Global keyboard shortcuts
 document.addEventListener("keydown", (e) => {
@@ -124,6 +165,7 @@ document.addEventListener("keydown", (e) => {
     cellPreview.style.display = "none";
     historyDropdown.style.display = "none";
     actionsDropdown.style.display = "none";
+    closeContextMenu();
   }
 });
 
@@ -154,6 +196,7 @@ cellPreview.addEventListener("click", (e) => {
 function runQuery(): void {
   const sql = editor.getValue().trim();
   if (!sql) return;
+  lastExecutedSql = sql;
   showLoading();
   clearError();
   currentTable = null;
@@ -176,6 +219,7 @@ function selectTable(name: string): void {
   currentTable = name;
   currentPage = 0;
   sortColumn = null;
+  lastExecutedSql = `SELECT * FROM "${name}"`;
   editor.setValue(`SELECT * FROM "${name}" LIMIT ${PAGE_SIZE}`);
   showLoading();
   clearError();
@@ -232,6 +276,11 @@ function renderSchemaTree(): void {
     row.appendChild(name);
     row.appendChild(badge);
     row.addEventListener("click", () => selectTable(t.name));
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTableContextMenu(e as MouseEvent, t.name);
+    });
     li.appendChild(row);
 
     // Columns (if expanded)
@@ -264,6 +313,52 @@ function renderSchemaTree(): void {
 
     tableList.appendChild(li);
   });
+}
+
+// ─── Table context menu ───
+
+function showTableContextMenu(e: MouseEvent, tableName: string): void {
+  closeContextMenu();
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  menu.style.left = e.clientX + "px";
+  menu.style.top = e.clientY + "px";
+
+  const describeItem = document.createElement("button");
+  describeItem.className = "dropdown-item";
+  describeItem.textContent = "Describe";
+  describeItem.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    showLoading();
+    clearError();
+    vscode.postMessage({ type: "describeTable", table: tableName });
+  });
+
+  const profileItem = document.createElement("button");
+  profileItem.className = "dropdown-item";
+  profileItem.textContent = "Profile";
+  profileItem.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    closeContextMenu();
+    showLoading();
+    clearError();
+    vscode.postMessage({ type: "summarize", table: tableName });
+  });
+
+  menu.appendChild(describeItem);
+  menu.appendChild(profileItem);
+  document.body.appendChild(menu);
+
+  // Close on next click or Escape
+  setTimeout(() => {
+    const close = () => { closeContextMenu(); document.removeEventListener("click", close); };
+    document.addEventListener("click", close);
+  }, 0);
+}
+
+function closeContextMenu(): void {
+  document.querySelectorAll(".context-menu").forEach((el) => el.remove());
 }
 
 // ─── Result rendering ───
@@ -306,6 +401,10 @@ function renderResult(result: {
   gridWrapper.style.display = "flex";
   csvBtn.disabled = currentRows.length === 0;
   jsonBtn.disabled = currentRows.length === 0;
+  profileBtn.disabled = !currentTable;
+  exportCsvBtn.disabled = !lastExecutedSql;
+  exportParquetBtn.disabled = !lastExecutedSql;
+  exportJsonBtn.disabled = !lastExecutedSql;
 
   renderGrid();
   renderPagination();

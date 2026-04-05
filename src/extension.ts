@@ -1,7 +1,16 @@
 import * as vscode from "vscode";
 import { DuckDBViewerPanel } from "./webviewPanel";
+import { DuckDBEditorProvider } from "./customEditorProvider";
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Custom editor provider — auto-opens .parquet, .duckdb, .ddb on double-click
+  const editorProvider = vscode.window.registerCustomEditorProvider(
+    DuckDBEditorProvider.viewType,
+    new DuckDBEditorProvider(context),
+    { webviewOptions: { retainContextWhenHidden: true } }
+  );
+
+  // Command — right-click "Open with DuckDB Viewer" for all supported formats
   const command = vscode.commands.registerCommand(
     "duckdb-viewer.openFile",
     async (uri?: vscode.Uri) => {
@@ -11,7 +20,10 @@ export function activate(context: vscode.ExtensionContext): void {
           canSelectFolders: false,
           canSelectMany: false,
           filters: {
-            "Data Files": ["db", "duckdb", "ddb", "csv", "parquet", "json", "jsonl", "ndjson"],
+            "Data Files": [
+              "db", "duckdb", "ddb", "csv", "parquet",
+              "json", "jsonl", "ndjson",
+            ],
           },
         });
         if (!files || files.length === 0) return;
@@ -21,7 +33,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
 
-  context.subscriptions.push(command);
+  context.subscriptions.push(editorProvider, command);
 }
 
 export function deactivate(): void {}

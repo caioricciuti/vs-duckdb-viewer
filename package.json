@@ -1,8 +1,8 @@
 {
   "name": "vs-duckdb-viewer",
   "displayName": "DuckDB Viewer",
-  "description": "Browse and query DuckDB database files directly inside VS Code",
-  "version": "1.0.0",
+  "description": "Browse and query DuckDB, Parquet, CSV, and JSON files directly inside VS Code",
+  "version": "1.1.0",
   "publisher": "caioricciuti",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -23,13 +23,33 @@
   ],
   "keywords": [
     "duckdb",
-    "database",
-    "viewer",
+    "parquet",
+    "csv viewer",
+    "parquet viewer",
     "sql",
-    "data"
+    "data explorer",
+    "analytics",
+    "data science",
+    "database",
+    "viewer"
   ],
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCustomEditor:duckdb-viewer.dataViewer"
+  ],
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "duckdb-viewer.dataViewer",
+        "displayName": "DuckDB Viewer",
+        "selector": [
+          { "filenamePattern": "*.parquet" },
+          { "filenamePattern": "*.duckdb" },
+          { "filenamePattern": "*.ddb" }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "duckdb-viewer.openFile",
