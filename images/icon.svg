@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2B2B2B"/>
+      <stop offset="100%" stop-color="#1A1A1A"/>
+    </linearGradient>
+    <linearGradient id="db" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFC107"/>
+      <stop offset="100%" stop-color="#FF9800"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="20" fill="url(#bg)"/>
+  <!-- Database cylinder -->
+  <ellipse cx="64" cy="38" rx="32" ry="12" fill="url(#db)" opacity="0.9"/>
+  <rect x="32" y="38" width="64" height="52" fill="url(#db)" opacity="0.75"/>
+  <ellipse cx="64" cy="90" rx="32" ry="12" fill="url(#db)" opacity="0.9"/>
+  <!-- Ring lines -->
+  <ellipse cx="64" cy="55" rx="32" ry="12" fill="none" stroke="#2B2B2B" stroke-width="1.5" opacity="0.35"/>
+  <ellipse cx="64" cy="72" rx="32" ry="12" fill="none" stroke="#2B2B2B" stroke-width="1.5" opacity="0.35"/>
+  <!-- Top highlight -->
+  <ellipse cx="64" cy="38" rx="32" ry="12" fill="none" stroke="#FFE082" stroke-width="1.2" opacity="0.5"/>
+  <!-- Magnifying glass -->
+  <circle cx="88" cy="88" r="14" fill="none" stroke="#EEEEEE" stroke-width="3.5" opacity="0.85"/>
+  <line x1="98" y1="98" x2="110" y2="110" stroke="#EEEEEE" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>
+</svg>

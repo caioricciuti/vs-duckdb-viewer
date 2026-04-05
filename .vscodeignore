@@ -1,0 +1,14 @@
+.vscode/**
+src/**/*.ts
+scripts/**
+test/**
+node_modules/**
+!node_modules/@duckdb/**
+**/*.map
+*.ts
+!src/webview/**
+.gitignore
+.git/**
+tsconfig.json
+esbuild.config.js
+CLAUDE.md

@@ -1,0 +1,69 @@
+{
+  "name": "vs-duckdb-viewer",
+  "displayName": "DuckDB Viewer",
+  "description": "Browse and query DuckDB database files directly inside VS Code",
+  "version": "0.1.0",
+  "publisher": "caioricciuti",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caioricciuti/vs-duckdb-viewer"
+  },
+  "homepage": "https://github.com/caioricciuti/vs-duckdb-viewer#readme",
+  "bugs": {
+    "url": "https://github.com/caioricciuti/vs-duckdb-viewer/issues"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Data Science"
+  ],
+  "keywords": [
+    "duckdb",
+    "database",
+    "viewer",
+    "sql",
+    "data"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "duckdb-viewer.openFile",
+        "title": "Open with DuckDB Viewer"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "duckdb-viewer.openFile",
+          "when": "resourceExtname == .db || resourceExtname == .duckdb || resourceExtname == .ddb",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "watch": "node esbuild.config.js --watch",
+    "package": "npm run build && vsce package",
+    "package:darwin-arm64": "npm run build && vsce package --target darwin-arm64",
+    "package:darwin-x64": "npm run build && vsce package --target darwin-x64",
+    "package:linux-x64": "npm run build && vsce package --target linux-x64",
+    "create-test-db": "bun scripts/create-test-db.ts",
+    "vscode:prepublish": "node esbuild.config.js --production"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.1-r.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "@types/vscode": "^1.100.0",
+    "@vscode/vsce": "^3.3.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}
