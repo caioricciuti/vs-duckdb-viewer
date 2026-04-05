@@ -59,22 +59,6 @@ npm run package
 > npx @vscode/vsce package --target linux-x64
 > ```
 
-## Publish to VS Code Marketplace
-
-1. Create a publisher at https://marketplace.visualstudio.com/manage
-2. Get a Personal Access Token from Azure DevOps
-3. Login and publish:
-
-```bash
-npx @vscode/vsce login <your-publisher-id>
-npx @vscode/vsce publish
-```
-
-For platform-specific publishing:
-
-```bash
-npx @vscode/vsce publish --target darwin-arm64 darwin-x64 linux-x64
-```
 
 ## Keyboard shortcuts
 
