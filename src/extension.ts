@@ -3,6 +3,8 @@ import { DuckDBViewerPanel } from "./webviewPanel";
 import { DuckDBEditorProvider } from "./customEditorProvider";
 
 export function activate(context: vscode.ExtensionContext): void {
+  console.log("[DuckDB Viewer] Extension activating...");
+
   // Custom editor provider — auto-opens .parquet, .duckdb, .ddb on double-click
   const editorProvider = vscode.window.registerCustomEditorProvider(
     DuckDBEditorProvider.viewType,
@@ -34,6 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(editorProvider, command);
+  console.log("[DuckDB Viewer] Custom editor provider registered for viewType:", DuckDBEditorProvider.viewType);
 }
 
 export function deactivate(): void {}

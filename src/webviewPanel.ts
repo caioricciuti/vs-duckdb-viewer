@@ -360,7 +360,6 @@ export class DuckDBViewerPanel {
   dispose(): void {
     DuckDBViewerPanel.panels.delete(this.filePath);
     this.provider.dispose();
-    this.panel.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }

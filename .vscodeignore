@@ -1,5 +1,6 @@
 .vscode/**
 src/**
+!src/webview/style.css
 scripts/**
 test/**
 node_modules/**
@@ -11,5 +12,6 @@ node_modules/**
 tsconfig.json
 tsconfig.webview.json
 esbuild.config.js
+media/**
 CLAUDE.md
 .claude/**

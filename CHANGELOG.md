@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-04-06
+
+### Fixed
+
+- Fixed custom editor not auto-opening files on double-click
+- Added diagnostic logging for custom editor lifecycle
+
 ## 1.1.0 — 2026-04-05
 
 ### Added
