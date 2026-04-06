@@ -2,7 +2,7 @@
 
 Browse and query DuckDB databases, CSV, Parquet, and JSON files directly inside VS Code.
 
-`.parquet`, `.duckdb`, and `.ddb` files open automatically on double-click. For `.csv`, `.json`, `.jsonl`, `.ndjson`, and `.db` files, right-click and select **Open with DuckDB Viewer**.
+`.parquet`, `.duckdb`, `.ddb`, `.csv`, `.json`, `.jsonl`, `.ndjson`, and `.db` files, right-click and select **Open with DuckDB Viewer**.
 
 <video src="https://github.com/caioricciuti/vs-duckdb-viewer/raw/main/media/duckviewer.mp4" controls></video>
 
