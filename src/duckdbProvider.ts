@@ -179,6 +179,23 @@ export class DuckDBProvider {
     this.instance = null;
   }
 
+  get canAttachFiles(): boolean {
+    return this.isDataFileMode;
+  }
+
+  async attachFile(filePath: string, alias: string): Promise<void> {
+    this.assertConnected();
+    if (!this.isDataFileMode) {
+      throw new Error(
+        "Attach is only supported when viewing data files (CSV, Parquet, JSON)."
+      );
+    }
+    const escaped = filePath.replace(/'/g, "''");
+    await this.connection!.run(
+      `CREATE OR REPLACE VIEW "${alias}" AS SELECT * FROM ${readerFn(filePath)}('${escaped}')`
+    );
+  }
+
   private assertConnected(): void {
     if (!this.connection) {
       throw new Error("Not connected to DuckDB. Call connect() first.");

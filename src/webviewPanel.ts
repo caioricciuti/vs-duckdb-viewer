@@ -187,6 +187,34 @@ export class DuckDBViewerPanel {
           });
           break;
         }
+        case "requestAttachFile": {
+          if (!this.provider.canAttachFiles) {
+            await this.panel.webview.postMessage({
+              type: "error",
+              message:
+                "Attach is only supported when viewing data files (CSV, Parquet, JSON).",
+            });
+            break;
+          }
+          const files = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: {
+              "Data Files": ["csv", "parquet", "json", "jsonl", "ndjson"],
+            },
+          });
+          if (!files || files.length === 0) break;
+          const attachPath = files[0].fsPath;
+          const alias = path.basename(attachPath).replace(/\.[^.]+$/, "");
+          await this.provider.attachFile(attachPath, alias);
+          const updatedSchema = await this.provider.getSchema();
+          await this.panel.webview.postMessage({
+            type: "schemaLoaded",
+            schema: updatedSchema,
+          });
+          break;
+        }
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -228,14 +256,21 @@ export class DuckDBViewerPanel {
     <aside class="sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">Schema</span>
-        <button class="icon-btn" id="refresh-btn" title="Refresh (reconnect &amp; reload)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-            <path d="M21 3v5h-5"/>
-            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-            <path d="M8 16H3v5"/>
-          </svg>
-        </button>
+        <div class="sidebar-header-actions">
+          <button class="icon-btn" id="attach-file-btn" title="Attach a data file (CSV, Parquet, JSON)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14"/><path d="M5 12h14"/>
+            </svg>
+          </button>
+          <button class="icon-btn" id="refresh-btn" title="Refresh (reconnect &amp; reload)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5"/>
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+              <path d="M8 16H3v5"/>
+            </svg>
+          </button>
+        </div>
       </div>
       <ul class="table-list" id="table-list"></ul>
       <div class="sidebar-footer">
@@ -245,8 +280,51 @@ export class DuckDBViewerPanel {
 
     <main class="main">
       <div class="query-bar">
-        <div class="query-editor-wrapper">
+        <div class="query-mode-toggle">
+          <button class="mode-btn active" id="sql-mode-btn">SQL</button>
+          <button class="mode-btn" id="builder-mode-btn">Builder</button>
+        </div>
+        <div class="query-editor-wrapper" id="query-editor-wrapper">
           <div id="query-editor"></div>
+        </div>
+        <div class="query-builder" id="query-builder" style="display:none">
+          <div class="builder-section">
+            <label class="builder-label">FROM</label>
+            <select class="builder-select" id="builder-table"><option value="">Select table...</option></select>
+          </div>
+          <div class="builder-section">
+            <label class="builder-label">SELECT</label>
+            <div class="builder-columns" id="builder-columns"></div>
+          </div>
+          <div class="builder-section">
+            <label class="builder-label">WHERE</label>
+            <div id="builder-filters"></div>
+            <button class="btn btn-secondary btn-sm" id="add-filter-btn">+ Add filter</button>
+          </div>
+          <div class="builder-section builder-row-inline">
+            <div class="builder-inline-item">
+              <label class="builder-label">GROUP BY</label>
+              <select class="builder-select" id="builder-groupby" multiple></select>
+            </div>
+            <div class="builder-inline-item">
+              <label class="builder-label">ORDER BY</label>
+              <div class="builder-orderby-wrapper">
+                <select class="builder-select" id="builder-orderby"><option value="">None</option></select>
+                <select class="builder-select builder-select-sm" id="builder-order-dir">
+                  <option value="ASC">ASC</option>
+                  <option value="DESC">DESC</option>
+                </select>
+              </div>
+            </div>
+            <div class="builder-inline-item">
+              <label class="builder-label">LIMIT</label>
+              <input class="builder-input" id="builder-limit" type="number" value="100" min="1" max="100000">
+            </div>
+          </div>
+          <div class="builder-preview">
+            <label class="builder-label">Generated SQL</label>
+            <pre class="builder-sql" id="builder-sql-preview">-- Select a table to build a query</pre>
+          </div>
         </div>
         <div class="query-actions">
           <button class="btn btn-primary" id="run-btn" title="${process.platform === "darwin" ? "Cmd" : "Ctrl"}+Enter">
@@ -312,6 +390,17 @@ export class DuckDBViewerPanel {
 
       <div class="status-bar" id="status-bar"></div>
 
+      <div class="view-toggle" id="view-toggle" style="display:none">
+        <div class="view-toggle-left">
+          <button class="view-btn active" id="table-view-btn">Table</button>
+          <button class="view-btn" id="chart-view-btn">Chart</button>
+        </div>
+        <div class="view-toggle-right">
+          <button class="btn btn-secondary btn-sm" id="snapshot-btn">Snapshot</button>
+          <button class="btn btn-secondary btn-sm" id="compare-btn" style="display:none">Compare</button>
+        </div>
+      </div>
+
       <div class="result-area" id="result-area">
         <div class="empty-state" id="empty-state">
           <svg width="48" height="48" viewBox="0 0 48 48" fill="currentColor" opacity="0.35">
@@ -322,6 +411,33 @@ export class DuckDBViewerPanel {
         <div class="grid-wrapper" id="grid-wrapper" style="display:none">
           <div class="grid-container" id="grid-container">
             <table class="data-grid" id="data-grid"></table>
+          </div>
+        </div>
+        <div class="chart-panel" id="chart-panel" style="display:none">
+          <div class="chart-controls">
+            <div class="chart-control-group">
+              <label>Type</label>
+              <select class="builder-select" id="chart-type">
+                <option value="bar">Bar</option>
+                <option value="line">Line</option>
+                <option value="scatter">Scatter</option>
+              </select>
+            </div>
+            <div class="chart-control-group">
+              <label>X Axis</label>
+              <select class="builder-select" id="chart-x-col"></select>
+            </div>
+            <div class="chart-control-group">
+              <label>Y Axis</label>
+              <select class="builder-select" id="chart-y-col"></select>
+            </div>
+          </div>
+          <div class="chart-canvas" id="chart-canvas"></div>
+        </div>
+        <div class="diff-panel" id="diff-panel" style="display:none">
+          <div class="diff-summary" id="diff-summary"></div>
+          <div class="diff-grid-container" id="diff-grid-container">
+            <table class="data-grid diff-grid" id="diff-grid"></table>
           </div>
         </div>
         <div class="error-banner" id="error-banner" style="display:none"></div>

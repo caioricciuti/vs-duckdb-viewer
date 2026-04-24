@@ -28,6 +28,28 @@ let expandedTables = new Set<string>();
 let schemaTables: SchemaTable[] = [];
 let lastExecutedSql: string | null = null;
 
+// ─── Query Builder State ───
+let builderMode = false;
+let builderTable: string | null = null;
+let builderSelectedCols = new Set<string>();
+let builderFilters: { col: string; op: string; val: string }[] = [];
+let builderGroupBy = new Set<string>();
+let builderOrderBy: string | null = null;
+let builderOrderDir: SortDir = "ASC";
+let builderLimit = 100;
+let builderSelectAll = true;
+
+// ─── Chart State ───
+let activeView: "table" | "chart" | "diff" = "table";
+let chartType: "bar" | "line" | "scatter" = "bar";
+let chartXCol = 0;
+let chartYCol = 1;
+
+// ─── Diff State ───
+let snapshotColumns: ColumnInfo[] = [];
+let snapshotRows: unknown[][] = [];
+let hasSnapshot = false;
+
 // ─── Elements ───
 const $ = (id: string) => document.getElementById(id)!;
 const tableList = $("table-list");
@@ -55,6 +77,35 @@ const cellPreviewTitle = $("cell-preview-title");
 const cellPreviewBody = $("cell-preview-body");
 const historyDropdown = $("history-dropdown");
 
+// New feature elements
+const attachFileBtn = $("attach-file-btn");
+const queryEditorWrapper = $("query-editor-wrapper");
+const sqlModeBtn = $("sql-mode-btn");
+const builderModeBtn = $("builder-mode-btn");
+const queryBuilder = $("query-builder");
+const builderTableSelect = $("builder-table") as HTMLSelectElement;
+const builderColumnsDiv = $("builder-columns");
+const builderFiltersDiv = $("builder-filters");
+const addFilterBtn = $("add-filter-btn");
+const builderGroupBySelect = $("builder-groupby") as HTMLSelectElement;
+const builderOrderBySelect = $("builder-orderby") as HTMLSelectElement;
+const builderOrderDirSelect = $("builder-order-dir") as HTMLSelectElement;
+const builderLimitInput = $("builder-limit") as HTMLInputElement;
+const builderSqlPreview = $("builder-sql-preview");
+const viewToggle = $("view-toggle");
+const tableViewBtn = $("table-view-btn");
+const chartViewBtn = $("chart-view-btn");
+const snapshotBtn = $("snapshot-btn");
+const compareBtn = $("compare-btn");
+const chartPanel = $("chart-panel");
+const chartTypeSelect = $("chart-type") as HTMLSelectElement;
+const chartXColSelect = $("chart-x-col") as HTMLSelectElement;
+const chartYColSelect = $("chart-y-col") as HTMLSelectElement;
+const chartCanvas = $("chart-canvas");
+const diffPanel = $("diff-panel");
+const diffSummary = $("diff-summary");
+const diffGrid = $("diff-grid");
+
 // ─── Editor ───
 const isMac = navigator.userAgent.includes("Mac");
 const modKey = isMac ? "Cmd" : "Ctrl";
@@ -73,6 +124,7 @@ window.addEventListener("message", (event: MessageEvent) => {
       schemaTables = msg.schema.tables;
       renderSchemaTree();
       editor.updateSchema(schemaTables);
+      if (builderMode) populateBuilder();
       hideLoading();
       break;
     case "queryResult":
@@ -155,12 +207,10 @@ exportJsonBtn.addEventListener("click", (e) => {
 
 // Global keyboard shortcuts
 document.addEventListener("keydown", (e) => {
-  // Cmd+L → focus editor
   if ((e.ctrlKey || e.metaKey) && e.key === "l") {
     e.preventDefault();
     editor.focus();
   }
-  // Escape → close modals
   if (e.key === "Escape") {
     cellPreview.style.display = "none";
     historyDropdown.style.display = "none";
@@ -169,7 +219,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Close dropdowns when clicking outside
 document.addEventListener("click", () => {
   historyDropdown.style.display = "none";
   actionsDropdown.style.display = "none";
@@ -191,11 +240,99 @@ cellPreview.addEventListener("click", (e) => {
   if (e.target === cellPreview) cellPreview.style.display = "none";
 });
 
+// ─── Mode toggle ───
+sqlModeBtn.addEventListener("click", () => {
+  builderMode = false;
+  sqlModeBtn.classList.add("active");
+  builderModeBtn.classList.remove("active");
+  queryEditorWrapper.style.display = "";
+  queryBuilder.style.display = "none";
+});
+
+builderModeBtn.addEventListener("click", () => {
+  builderMode = true;
+  builderModeBtn.classList.add("active");
+  sqlModeBtn.classList.remove("active");
+  queryEditorWrapper.style.display = "none";
+  queryBuilder.style.display = "";
+  populateBuilder();
+});
+
+// ─── Attach file ───
+attachFileBtn.addEventListener("click", () => {
+  vscode.postMessage({ type: "requestAttachFile" });
+});
+
+// ─── View toggles ───
+tableViewBtn.addEventListener("click", () => switchView("table"));
+chartViewBtn.addEventListener("click", () => switchView("chart"));
+
+// ─── Snapshot & Compare ───
+snapshotBtn.addEventListener("click", takeSnapshot);
+compareBtn.addEventListener("click", showDiffView);
+
+// ─── Chart controls ───
+chartTypeSelect.addEventListener("change", () => {
+  chartType = chartTypeSelect.value as "bar" | "line" | "scatter";
+  renderChart();
+});
+chartXColSelect.addEventListener("change", () => {
+  chartXCol = parseInt(chartXColSelect.value);
+  renderChart();
+});
+chartYColSelect.addEventListener("change", () => {
+  chartYCol = parseInt(chartYColSelect.value);
+  renderChart();
+});
+
+// ─── Builder controls ───
+builderTableSelect.addEventListener("change", () => {
+  builderTable = builderTableSelect.value || null;
+  builderSelectedCols.clear();
+  builderSelectAll = true;
+  builderFilters = [];
+  builderGroupBy.clear();
+  builderOrderBy = null;
+  populateBuilderColumns();
+  updateBuilderSql();
+});
+addFilterBtn.addEventListener("click", () => {
+  if (!builderTable) return;
+  builderFilters.push({ col: "", op: "=", val: "" });
+  renderBuilderFilters();
+  updateBuilderSql();
+});
+builderGroupBySelect.addEventListener("change", () => {
+  builderGroupBy.clear();
+  for (const opt of builderGroupBySelect.selectedOptions) {
+    builderGroupBy.add(opt.value);
+  }
+  updateBuilderSql();
+});
+builderOrderBySelect.addEventListener("change", () => {
+  builderOrderBy = builderOrderBySelect.value || null;
+  updateBuilderSql();
+});
+builderOrderDirSelect.addEventListener("change", () => {
+  builderOrderDir = builderOrderDirSelect.value as SortDir;
+  updateBuilderSql();
+});
+builderLimitInput.addEventListener("input", () => {
+  builderLimit = parseInt(builderLimitInput.value) || 100;
+  updateBuilderSql();
+});
+
 // ─── Core functions ───
 
 function runQuery(): void {
-  const sql = editor.getValue().trim();
-  if (!sql) return;
+  let sql: string;
+  if (builderMode) {
+    sql = generateBuilderSql();
+    editor.setValue(sql);
+  } else {
+    sql = editor.getValue().trim();
+  }
+  if (!sql || sql.startsWith("--")) return;
   lastExecutedSql = sql;
   showLoading();
   clearError();
@@ -244,14 +381,13 @@ function renderSchemaTree(): void {
     const li = document.createElement("li");
     li.className = "tree-item";
 
-    // Table row
     const row = document.createElement("div");
     row.className = "tree-table" + (currentTable === t.name ? " active" : "");
     row.setAttribute("data-table", t.name);
 
     const toggle = document.createElement("span");
     toggle.className = "tree-toggle" + (expandedTables.has(t.name) ? " expanded" : "");
-    toggle.textContent = "\u25B6";
+    toggle.textContent = "▶";
     toggle.addEventListener("click", (e) => {
       e.stopPropagation();
       if (expandedTables.has(t.name)) {
@@ -283,7 +419,6 @@ function renderSchemaTree(): void {
     });
     li.appendChild(row);
 
-    // Columns (if expanded)
     if (expandedTables.has(t.name)) {
       const colList = document.createElement("ul");
       colList.className = "tree-columns";
@@ -350,7 +485,6 @@ function showTableContextMenu(e: MouseEvent, tableName: string): void {
   menu.appendChild(profileItem);
   document.body.appendChild(menu);
 
-  // Close on next click or Escape
   setTimeout(() => {
     const close = () => { closeContextMenu(); document.removeEventListener("click", close); };
     document.addEventListener("click", close);
@@ -398,7 +532,6 @@ function renderResult(result: {
 
   emptyState.style.display = "none";
   errorBanner.style.display = "none";
-  gridWrapper.style.display = "flex";
   csvBtn.disabled = currentRows.length === 0;
   jsonBtn.disabled = currentRows.length === 0;
   profileBtn.disabled = !currentTable;
@@ -406,7 +539,30 @@ function renderResult(result: {
   exportParquetBtn.disabled = !lastExecutedSql;
   exportJsonBtn.disabled = !lastExecutedSql;
 
-  renderGrid();
+  // Show view toggle when we have data
+  viewToggle.style.display = currentColumns.length > 0 ? "flex" : "none";
+
+  if (activeView === "chart") {
+    gridWrapper.style.display = "none";
+    chartPanel.style.display = "flex";
+    diffPanel.style.display = "none";
+    populateChartControls();
+    renderChart();
+  } else if (activeView === "diff") {
+    activeView = "table";
+    tableViewBtn.classList.add("active");
+    chartViewBtn.classList.remove("active");
+    gridWrapper.style.display = "flex";
+    chartPanel.style.display = "none";
+    diffPanel.style.display = "none";
+    renderGrid();
+  } else {
+    gridWrapper.style.display = "flex";
+    chartPanel.style.display = "none";
+    diffPanel.style.display = "none";
+    renderGrid();
+  }
+
   renderPagination();
 }
 
@@ -425,7 +581,7 @@ function renderGrid(): void {
     const w = calcColWidth(col, i);
     const isSorted = currentTable && sortColumn === col.name;
     const arrow = isSorted
-      ? `<span class="sort-arrow">${sortDir === "ASC" ? "\u25B2" : "\u25BC"}</span>`
+      ? `<span class="sort-arrow">${sortDir === "ASC" ? "▲" : "▼"}</span>`
       : "";
     const sortClass = currentTable ? " col-sortable" : "";
     const sortedClass = isSorted ? " col-sorted" : "";
@@ -462,7 +618,7 @@ function renderGrid(): void {
 }
 
 function renderPagination(): void {
-  if (!currentTable || totalPages <= 1) {
+  if (!currentTable || totalPages <= 1 || activeView !== "table") {
     pagination.style.display = "none";
     return;
   }
@@ -471,11 +627,11 @@ function renderPagination(): void {
   const end = Math.min((currentPage + 1) * PAGE_SIZE, totalRows);
 
   pagination.innerHTML =
-    `<span class="pagination-info">Rows ${start.toLocaleString()} \u2013 ${end.toLocaleString()} of ${totalRows.toLocaleString()}</span>` +
+    `<span class="pagination-info">Rows ${start.toLocaleString()} – ${end.toLocaleString()} of ${totalRows.toLocaleString()}</span>` +
     `<div class="pagination-controls">` +
-    `<button class="page-btn" id="prev-btn"${currentPage === 0 ? " disabled" : ""}>\u2190 Prev</button>` +
+    `<button class="page-btn" id="prev-btn"${currentPage === 0 ? " disabled" : ""}>← Prev</button>` +
     `<span class="page-indicator">Page ${currentPage + 1} of ${totalPages}</span>` +
-    `<button class="page-btn" id="next-btn"${currentPage >= totalPages - 1 ? " disabled" : ""}>Next \u2192</button>` +
+    `<button class="page-btn" id="next-btn"${currentPage >= totalPages - 1 ? " disabled" : ""}>Next →</button>` +
     `</div>`;
 
   $("prev-btn")?.addEventListener("click", () => {
@@ -561,7 +717,6 @@ function initCellClick(): void {
     let displayValue =
       value === null || value === undefined ? "NULL" : String(value);
 
-    // Try to format JSON
     if (
       displayValue.startsWith("{") ||
       displayValue.startsWith("[")
@@ -569,7 +724,7 @@ function initCellClick(): void {
       try {
         displayValue = JSON.stringify(JSON.parse(displayValue), null, 2);
       } catch {
-        // not JSON, show raw
+        // not JSON
       }
     }
 
@@ -608,7 +763,7 @@ function copyAsJson(): void {
 function copyToClipboard(text: string, btn: HTMLButtonElement): void {
   navigator.clipboard.writeText(text).then(() => {
     const orig = btn.textContent;
-    btn.textContent = "\u2713 Copied!";
+    btn.textContent = "✓ Copied!";
     setTimeout(() => {
       btn.textContent = orig;
     }, 1200);
@@ -676,14 +831,544 @@ function initColumnResize(): void {
   });
 }
 
+// ─── View switching ───
+
+function switchView(view: "table" | "chart" | "diff"): void {
+  activeView = view;
+  tableViewBtn.classList.toggle("active", view === "table");
+  chartViewBtn.classList.toggle("active", view === "chart");
+
+  gridWrapper.style.display = view === "table" ? "flex" : "none";
+  chartPanel.style.display = view === "chart" ? "flex" : "none";
+  diffPanel.style.display = view === "diff" ? "flex" : "none";
+  pagination.style.display = view === "table" && currentTable && totalPages > 1 ? "flex" : "none";
+
+  if (view === "chart") {
+    populateChartControls();
+    renderChart();
+  }
+}
+
+// ─── Query Builder ───
+
+function populateBuilder(): void {
+  builderTableSelect.innerHTML = '<option value="">Select table...</option>';
+  schemaTables.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.name;
+    opt.textContent = t.name;
+    if (builderTable === t.name) opt.selected = true;
+    builderTableSelect.appendChild(opt);
+  });
+  populateBuilderColumns();
+  updateBuilderSql();
+}
+
+function populateBuilderColumns(): void {
+  builderColumnsDiv.innerHTML = "";
+  builderGroupBySelect.innerHTML = "";
+  builderOrderBySelect.innerHTML = '<option value="">None</option>';
+
+  const table = schemaTables.find((t) => t.name === builderTable);
+  if (!table) {
+    builderColumnsDiv.innerHTML = '<span class="builder-hint">Select a table first</span>';
+    return;
+  }
+
+  const allLabel = document.createElement("label");
+  allLabel.className = "builder-col-item";
+  const allCb = document.createElement("input");
+  allCb.type = "checkbox";
+  allCb.checked = builderSelectAll;
+  allCb.addEventListener("change", () => {
+    builderSelectAll = allCb.checked;
+    if (builderSelectAll) builderSelectedCols.clear();
+    populateBuilderColumns();
+    updateBuilderSql();
+  });
+  allLabel.appendChild(allCb);
+  allLabel.appendChild(document.createTextNode(" * (all)"));
+  builderColumnsDiv.appendChild(allLabel);
+
+  table.columns.forEach((col) => {
+    const label = document.createElement("label");
+    label.className = "builder-col-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = builderSelectAll || builderSelectedCols.has(col.name);
+    cb.disabled = builderSelectAll;
+    cb.addEventListener("change", () => {
+      if (cb.checked) builderSelectedCols.add(col.name);
+      else builderSelectedCols.delete(col.name);
+      updateBuilderSql();
+    });
+    const text = document.createElement("span");
+    text.textContent = ` ${col.name}`;
+    const typeSpan = document.createElement("span");
+    typeSpan.className = "builder-col-type";
+    typeSpan.textContent = col.type.toLowerCase();
+    label.appendChild(cb);
+    label.appendChild(text);
+    label.appendChild(typeSpan);
+    builderColumnsDiv.appendChild(label);
+
+    const gbOpt = document.createElement("option");
+    gbOpt.value = col.name;
+    gbOpt.textContent = col.name;
+    if (builderGroupBy.has(col.name)) gbOpt.selected = true;
+    builderGroupBySelect.appendChild(gbOpt);
+
+    const obOpt = document.createElement("option");
+    obOpt.value = col.name;
+    obOpt.textContent = col.name;
+    if (builderOrderBy === col.name) obOpt.selected = true;
+    builderOrderBySelect.appendChild(obOpt);
+  });
+
+  renderBuilderFilters();
+}
+
+function renderBuilderFilters(): void {
+  builderFiltersDiv.innerHTML = "";
+  const table = schemaTables.find((t) => t.name === builderTable);
+  if (!table) return;
+
+  builderFilters.forEach((filter, idx) => {
+    const row = document.createElement("div");
+    row.className = "builder-filter-row";
+
+    const colSelect = document.createElement("select");
+    colSelect.className = "builder-select";
+    colSelect.innerHTML = '<option value="">Column...</option>';
+    table.columns.forEach((col) => {
+      const opt = document.createElement("option");
+      opt.value = col.name;
+      opt.textContent = col.name;
+      if (filter.col === col.name) opt.selected = true;
+      colSelect.appendChild(opt);
+    });
+    colSelect.addEventListener("change", () => {
+      builderFilters[idx].col = colSelect.value;
+      updateBuilderSql();
+    });
+
+    const opSelect = document.createElement("select");
+    opSelect.className = "builder-select builder-select-sm";
+    ["=", "!=", ">", "<", ">=", "<=", "LIKE", "IS NULL", "IS NOT NULL"].forEach((op) => {
+      const opt = document.createElement("option");
+      opt.value = op;
+      opt.textContent = op;
+      if (filter.op === op) opt.selected = true;
+      opSelect.appendChild(opt);
+    });
+    opSelect.addEventListener("change", () => {
+      builderFilters[idx].op = opSelect.value;
+      renderBuilderFilters();
+      updateBuilderSql();
+    });
+
+    const valInput = document.createElement("input");
+    valInput.className = "builder-input";
+    valInput.placeholder = "Value...";
+    valInput.value = filter.val;
+    valInput.disabled = filter.op === "IS NULL" || filter.op === "IS NOT NULL";
+    valInput.addEventListener("input", () => {
+      builderFilters[idx].val = valInput.value;
+      updateBuilderSql();
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "icon-btn";
+    removeBtn.title = "Remove filter";
+    removeBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+    removeBtn.addEventListener("click", () => {
+      builderFilters.splice(idx, 1);
+      renderBuilderFilters();
+      updateBuilderSql();
+    });
+
+    row.appendChild(colSelect);
+    row.appendChild(opSelect);
+    row.appendChild(valInput);
+    row.appendChild(removeBtn);
+    builderFiltersDiv.appendChild(row);
+  });
+}
+
+function updateBuilderSql(): void {
+  builderSqlPreview.textContent = generateBuilderSql();
+}
+
+function generateBuilderSql(): string {
+  if (!builderTable) return "-- Select a table to build a query";
+
+  let cols = "*";
+  if (!builderSelectAll && builderSelectedCols.size > 0) {
+    cols = [...builderSelectedCols].map((c) => `"${c}"`).join(", ");
+  }
+
+  let sql = `SELECT ${cols}\nFROM "${builderTable}"`;
+
+  const validFilters = builderFilters.filter((f) => {
+    if (!f.col) return false;
+    if (f.op === "IS NULL" || f.op === "IS NOT NULL") return true;
+    return f.val !== "";
+  });
+
+  if (validFilters.length > 0) {
+    const conditions = validFilters.map((f) => {
+      if (f.op === "IS NULL") return `"${f.col}" IS NULL`;
+      if (f.op === "IS NOT NULL") return `"${f.col}" IS NOT NULL`;
+      if (f.op === "LIKE") return `"${f.col}" LIKE '${f.val.replace(/'/g, "''")}'`;
+      const numVal = Number(f.val);
+      const isNum = !isNaN(numVal) && f.val.trim() !== "";
+      return `"${f.col}" ${f.op} ${isNum ? f.val : `'${f.val.replace(/'/g, "''")}'`}`;
+    });
+    sql += `\nWHERE ${conditions.join("\n  AND ")}`;
+  }
+
+  if (builderGroupBy.size > 0) {
+    sql += `\nGROUP BY ${[...builderGroupBy].map((c) => `"${c}"`).join(", ")}`;
+  }
+
+  if (builderOrderBy) {
+    sql += `\nORDER BY "${builderOrderBy}" ${builderOrderDir}`;
+  }
+
+  sql += `\nLIMIT ${builderLimit}`;
+
+  return sql;
+}
+
+// ─── Charts ───
+
+const CHART_COLORS = [
+  "var(--vscode-charts-blue, var(--vscode-textLink-foreground, #4fc1ff))",
+  "var(--vscode-charts-red, #f14c4c)",
+  "var(--vscode-charts-green, #89d185)",
+  "var(--vscode-charts-yellow, #cca700)",
+  "var(--vscode-charts-purple, #b180d7)",
+  "var(--vscode-charts-orange, #e8ab53)",
+];
+
+function isNumericType(type: string): boolean {
+  const t = type.toUpperCase();
+  return ["INTEGER", "BIGINT", "SMALLINT", "TINYINT", "FLOAT", "DOUBLE", "DECIMAL",
+    "HUGEINT", "UBIGINT", "UINTEGER", "USMALLINT", "UTINYINT", "INT", "INT4",
+    "INT8", "INT2", "REAL", "NUMERIC"].some((n) => t.includes(n));
+}
+
+function populateChartControls(): void {
+  chartXColSelect.innerHTML = "";
+  chartYColSelect.innerHTML = "";
+
+  currentColumns.forEach((col, i) => {
+    const xOpt = document.createElement("option");
+    xOpt.value = String(i);
+    xOpt.textContent = col.name;
+    chartXColSelect.appendChild(xOpt);
+
+    const yOpt = document.createElement("option");
+    yOpt.value = String(i);
+    yOpt.textContent = col.name;
+    chartYColSelect.appendChild(yOpt);
+  });
+
+  const firstStringIdx = currentColumns.findIndex((c) => !isNumericType(c.type));
+  const firstNumIdx = currentColumns.findIndex((c) => isNumericType(c.type));
+
+  chartXCol = firstStringIdx >= 0 ? firstStringIdx : 0;
+  chartYCol = firstNumIdx >= 0 ? firstNumIdx : (currentColumns.length > 1 ? 1 : 0);
+
+  chartXColSelect.value = String(chartXCol);
+  chartYColSelect.value = String(chartYCol);
+}
+
+function renderChart(): void {
+  if (!currentColumns.length || !currentRows.length) {
+    chartCanvas.innerHTML = '<div class="chart-empty">No data to visualize</div>';
+    return;
+  }
+
+  const maxPoints = 200;
+  const rows = currentRows.slice(0, maxPoints);
+  const xValues = rows.map((r) => r[chartXCol] === null ? "NULL" : String(r[chartXCol]));
+  const yValues = rows.map((r) => {
+    const v = r[chartYCol];
+    return v === null ? 0 : Number(v) || 0;
+  });
+
+  const width = chartCanvas.clientWidth || 600;
+  const height = Math.min(400, Math.max(250, width * 0.5));
+
+  switch (chartType) {
+    case "bar":
+      chartCanvas.innerHTML = renderBarChart(width, height, xValues, yValues);
+      break;
+    case "line":
+      chartCanvas.innerHTML = renderLineChart(width, height, xValues, yValues);
+      break;
+    case "scatter":
+      chartCanvas.innerHTML = renderScatterChart(width, height, rows);
+      break;
+  }
+
+  if (currentRows.length > maxPoints) {
+    chartCanvas.innerHTML += `<div class="chart-truncated">Showing first ${maxPoints} of ${currentRows.length} rows</div>`;
+  }
+}
+
+function renderBarChart(width: number, height: number, labels: string[], values: number[]): string {
+  const pad = { top: 20, right: 20, bottom: 80, left: 60 };
+  const cw = width - pad.left - pad.right;
+  const ch = height - pad.top - pad.bottom;
+  const maxVal = Math.max(...values, 0);
+  const minVal = Math.min(...values, 0);
+  const range = maxVal - minVal || 1;
+  const barW = Math.max(2, cw / labels.length - 2);
+  const color = CHART_COLORS[0];
+
+  let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">`;
+
+  for (let i = 0; i <= 5; i++) {
+    const val = minVal + (range * i) / 5;
+    const y = pad.top + ch - (ch * (val - minVal)) / range;
+    svg += `<line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" stroke="var(--vscode-editorWidget-border, rgba(128,128,128,0.2))" stroke-dasharray="3,3"/>`;
+    svg += `<text x="${pad.left - 8}" y="${y + 3}" text-anchor="end" fill="var(--vscode-descriptionForeground)" font-size="10" font-family="var(--vscode-font-family)">${formatChartNum(val)}</text>`;
+  }
+
+  labels.forEach((label, i) => {
+    const x = pad.left + i * (cw / labels.length) + 1;
+    const barH = (ch * Math.abs(values[i])) / range;
+    const y = values[i] >= 0
+      ? pad.top + ch - (ch * (values[i] - minVal)) / range
+      : pad.top + ch - (ch * (0 - minVal)) / range;
+    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${color}" rx="1" opacity="0.85"><title>${esc(label)}: ${values[i]}</title></rect>`;
+  });
+
+  const step = Math.max(1, Math.ceil(labels.length / 25));
+  labels.forEach((label, i) => {
+    if (i % step !== 0) return;
+    const x = pad.left + i * (cw / labels.length) + barW / 2;
+    const displayLabel = label.length > 12 ? label.substring(0, 12) + ".." : label;
+    svg += `<text x="${x}" y="${pad.top + ch + 14}" text-anchor="end" fill="var(--vscode-descriptionForeground)" font-size="10" font-family="var(--vscode-font-family)" transform="rotate(-45,${x},${pad.top + ch + 14})">${esc(displayLabel)}</text>`;
+  });
+
+  svg += `<line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + ch}" stroke="var(--vscode-editor-foreground)" opacity="0.3"/>`;
+  svg += `<line x1="${pad.left}" y1="${pad.top + ch}" x2="${width - pad.right}" y2="${pad.top + ch}" stroke="var(--vscode-editor-foreground)" opacity="0.3"/>`;
+  svg += `<text x="${pad.left + cw / 2}" y="${height - 4}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="11" font-family="var(--vscode-font-family)">${esc(currentColumns[chartXCol]?.name ?? "")}</text>`;
+  svg += `<text x="14" y="${pad.top + ch / 2}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="11" font-family="var(--vscode-font-family)" transform="rotate(-90,14,${pad.top + ch / 2})">${esc(currentColumns[chartYCol]?.name ?? "")}</text>`;
+  svg += `</svg>`;
+  return svg;
+}
+
+function renderLineChart(width: number, height: number, labels: string[], values: number[]): string {
+  const pad = { top: 20, right: 20, bottom: 80, left: 60 };
+  const cw = width - pad.left - pad.right;
+  const ch = height - pad.top - pad.bottom;
+  const maxVal = Math.max(...values);
+  const minVal = Math.min(...values);
+  const range = maxVal - minVal || 1;
+  const color = CHART_COLORS[0];
+
+  let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">`;
+
+  for (let i = 0; i <= 5; i++) {
+    const val = minVal + (range * i) / 5;
+    const y = pad.top + ch - (ch * (val - minVal)) / range;
+    svg += `<line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" stroke="var(--vscode-editorWidget-border, rgba(128,128,128,0.2))" stroke-dasharray="3,3"/>`;
+    svg += `<text x="${pad.left - 8}" y="${y + 3}" text-anchor="end" fill="var(--vscode-descriptionForeground)" font-size="10" font-family="var(--vscode-font-family)">${formatChartNum(val)}</text>`;
+  }
+
+  const points = values.map((v, i) => {
+    const x = pad.left + (i / Math.max(1, values.length - 1)) * cw;
+    const y = pad.top + ch - (ch * (v - minVal)) / range;
+    return `${x},${y}`;
+  });
+
+  const firstX = pad.left;
+  const lastX = pad.left + (values.length > 1 ? cw : 0);
+  const bottomY = pad.top + ch;
+  svg += `<polygon points="${points.join(" ")} ${lastX},${bottomY} ${firstX},${bottomY}" fill="${color}" opacity="0.08"/>`;
+  svg += `<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
+
+  values.forEach((v, i) => {
+    const x = pad.left + (i / Math.max(1, values.length - 1)) * cw;
+    const y = pad.top + ch - (ch * (v - minVal)) / range;
+    svg += `<circle cx="${x}" cy="${y}" r="3" fill="${color}"><title>${esc(labels[i])}: ${v}</title></circle>`;
+  });
+
+  const step = Math.max(1, Math.ceil(labels.length / 15));
+  labels.forEach((label, i) => {
+    if (i % step !== 0) return;
+    const x = pad.left + (i / Math.max(1, values.length - 1)) * cw;
+    const displayLabel = label.length > 12 ? label.substring(0, 12) + ".." : label;
+    svg += `<text x="${x}" y="${pad.top + ch + 14}" text-anchor="end" fill="var(--vscode-descriptionForeground)" font-size="10" font-family="var(--vscode-font-family)" transform="rotate(-45,${x},${pad.top + ch + 14})">${esc(displayLabel)}</text>`;
+  });
+
+  svg += `<line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + ch}" stroke="var(--vscode-editor-foreground)" opacity="0.3"/>`;
+  svg += `<line x1="${pad.left}" y1="${pad.top + ch}" x2="${width - pad.right}" y2="${pad.top + ch}" stroke="var(--vscode-editor-foreground)" opacity="0.3"/>`;
+  svg += `<text x="${pad.left + cw / 2}" y="${height - 4}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="11" font-family="var(--vscode-font-family)">${esc(currentColumns[chartXCol]?.name ?? "")}</text>`;
+  svg += `<text x="14" y="${pad.top + ch / 2}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="11" font-family="var(--vscode-font-family)" transform="rotate(-90,14,${pad.top + ch / 2})">${esc(currentColumns[chartYCol]?.name ?? "")}</text>`;
+  svg += `</svg>`;
+  return svg;
+}
+
+function renderScatterChart(width: number, height: number, rows: unknown[][]): string {
+  const pad = { top: 20, right: 20, bottom: 80, left: 60 };
+  const cw = width - pad.left - pad.right;
+  const ch = height - pad.top - pad.bottom;
+  const color = CHART_COLORS[0];
+
+  const xVals = rows.map((r) => Number(r[chartXCol]) || 0);
+  const yVals = rows.map((r) => Number(r[chartYCol]) || 0);
+  const xMin = Math.min(...xVals);
+  const xMax = Math.max(...xVals);
+  const yMin = Math.min(...yVals);
+  const yMax = Math.max(...yVals);
+  const xRange = xMax - xMin || 1;
+  const yRange = yMax - yMin || 1;
+
+  let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">`;
+
+  for (let i = 0; i <= 5; i++) {
+    const yVal = yMin + (yRange * i) / 5;
+    const y = pad.top + ch - (ch * (yVal - yMin)) / yRange;
+    svg += `<line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" stroke="var(--vscode-editorWidget-border, rgba(128,128,128,0.2))" stroke-dasharray="3,3"/>`;
+    svg += `<text x="${pad.left - 8}" y="${y + 3}" text-anchor="end" fill="var(--vscode-descriptionForeground)" font-size="10">${formatChartNum(yVal)}</text>`;
+
+    const xVal = xMin + (xRange * i) / 5;
+    const x = pad.left + (cw * (xVal - xMin)) / xRange;
+    svg += `<text x="${x}" y="${pad.top + ch + 14}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="10">${formatChartNum(xVal)}</text>`;
+  }
+
+  rows.forEach((_, i) => {
+    const x = pad.left + (cw * (xVals[i] - xMin)) / xRange;
+    const y = pad.top + ch - (ch * (yVals[i] - yMin)) / yRange;
+    svg += `<circle cx="${x}" cy="${y}" r="4" fill="${color}" opacity="0.7"><title>(${xVals[i]}, ${yVals[i]})</title></circle>`;
+  });
+
+  svg += `<line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + ch}" stroke="var(--vscode-editor-foreground)" opacity="0.3"/>`;
+  svg += `<line x1="${pad.left}" y1="${pad.top + ch}" x2="${width - pad.right}" y2="${pad.top + ch}" stroke="var(--vscode-editor-foreground)" opacity="0.3"/>`;
+  svg += `<text x="${pad.left + cw / 2}" y="${height - 4}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="11">${esc(currentColumns[chartXCol]?.name ?? "")}</text>`;
+  svg += `<text x="14" y="${pad.top + ch / 2}" text-anchor="middle" fill="var(--vscode-descriptionForeground)" font-size="11" transform="rotate(-90,14,${pad.top + ch / 2})">${esc(currentColumns[chartYCol]?.name ?? "")}</text>`;
+  svg += `</svg>`;
+  return svg;
+}
+
+function formatChartNum(n: number): string {
+  if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(1);
+}
+
+// ─── Diff / Compare ───
+
+function takeSnapshot(): void {
+  if (!currentColumns.length || !currentRows.length) return;
+  snapshotColumns = [...currentColumns];
+  snapshotRows = currentRows.map((r) => [...(r as unknown[])]);
+  hasSnapshot = true;
+  compareBtn.style.display = "";
+  snapshotBtn.textContent = "Saved!";
+  setTimeout(() => { snapshotBtn.textContent = "Snapshot"; }, 1200);
+}
+
+function showDiffView(): void {
+  if (!hasSnapshot) return;
+
+  const maxRows = Math.max(snapshotRows.length, currentRows.length);
+  const allCols = currentColumns.length > 0 ? currentColumns : snapshotColumns;
+
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+  let unchanged = 0;
+
+  type DiffRow = { type: "added" | "removed" | "changed" | "unchanged"; cells: unknown[]; changedCells?: Set<number> };
+  const diffRows: DiffRow[] = [];
+
+  for (let i = 0; i < maxRows; i++) {
+    const snapRow = snapshotRows[i] as unknown[] | undefined;
+    const currRow = currentRows[i] as unknown[] | undefined;
+
+    if (!snapRow && currRow) {
+      added++;
+      diffRows.push({ type: "added", cells: currRow });
+    } else if (snapRow && !currRow) {
+      removed++;
+      diffRows.push({ type: "removed", cells: snapRow });
+    } else if (snapRow && currRow) {
+      const changedCells = new Set<number>();
+      const maxCells = Math.max(snapRow.length, currRow.length);
+      for (let c = 0; c < maxCells; c++) {
+        if (String(snapRow[c] ?? "") !== String(currRow[c] ?? "")) {
+          changedCells.add(c);
+        }
+      }
+      if (changedCells.size > 0) {
+        changed++;
+        diffRows.push({ type: "changed", cells: currRow, changedCells });
+      } else {
+        unchanged++;
+        diffRows.push({ type: "unchanged", cells: currRow });
+      }
+    }
+  }
+
+  diffSummary.innerHTML = `
+    <span class="diff-stat diff-stat-added">${added} added</span>
+    <span class="diff-stat diff-stat-removed">${removed} removed</span>
+    <span class="diff-stat diff-stat-changed">${changed} changed</span>
+    <span class="diff-stat diff-stat-unchanged">${unchanged} unchanged</span>
+  `;
+
+  let html = "<thead><tr>";
+  html += '<th class="row-num-header">#</th>';
+  html += '<th class="diff-status-col">Status</th>';
+  allCols.forEach((col) => {
+    html += `<th>${esc(col.name)}<span class="col-type">${esc(col.type)}</span></th>`;
+  });
+  html += "</tr></thead><tbody>";
+
+  diffRows.forEach((dr, i) => {
+    html += `<tr class="diff-row-${dr.type}">`;
+    html += `<td class="row-num">${i + 1}</td>`;
+    const statusLabel = dr.type === "unchanged" ? "—" : dr.type;
+    html += `<td class="diff-status-cell">${statusLabel}</td>`;
+    (dr.cells as unknown[]).forEach((cell, ci) => {
+      const cellClass = dr.changedCells?.has(ci) ? " diff-cell-changed" : "";
+      const val = cell === null || cell === undefined ? "NULL" : String(cell);
+      html += `<td class="${cellClass}">${esc(val)}</td>`;
+    });
+    html += "</tr>";
+  });
+  html += "</tbody>";
+
+  diffGrid.innerHTML = html;
+
+  activeView = "diff";
+  gridWrapper.style.display = "none";
+  chartPanel.style.display = "none";
+  diffPanel.style.display = "flex";
+  pagination.style.display = "none";
+  tableViewBtn.classList.remove("active");
+  chartViewBtn.classList.remove("active");
+  viewToggle.style.display = "flex";
+}
+
 // ─── Helpers ───
 
 function showError(message: string): void {
   emptyState.style.display = "none";
   gridWrapper.style.display = "none";
+  chartPanel.style.display = "none";
+  diffPanel.style.display = "none";
   errorBanner.style.display = "block";
   errorBanner.textContent = message;
   pagination.style.display = "none";
+  viewToggle.style.display = "none";
   csvBtn.disabled = true;
   jsonBtn.disabled = true;
   statusBar.innerHTML = "";
@@ -703,7 +1388,6 @@ function hideLoading(): void {
 
 function calcColWidth(col: ColumnInfo, colIdx: number): number {
   const headerLen = Math.max((col.name || "").length, (col.type || "").length);
-  // Sample first 20 rows to estimate content width
   let maxDataLen = 0;
   const sampleSize = Math.min(currentRows.length, 20);
   for (let i = 0; i < sampleSize; i++) {
